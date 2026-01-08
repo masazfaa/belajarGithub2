@@ -26,6 +26,15 @@ class Home extends BaseController
         return view('template/v_wrapperr', $data);
     }
 
+    public function getLaporanJson()
+    {
+        // Ambil data terbaru dari model
+        $data = $this->m_aset->getAllLaporan();
+        
+        // Kirim sebagai JSON (Data Mentah)
+        return $this->response->setJSON($data);
+    }
+
     public function data()
     {
         $data = [

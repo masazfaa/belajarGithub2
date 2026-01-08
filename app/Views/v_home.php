@@ -112,13 +112,13 @@ $('form').submit(function(e) {
   <div id="filter-container">
     <div class="filter-section">
       <label for="kerusakan-range">Tingkat Kerusakan (0-100%)</label>
-      <input type="range" id="kerusakan-range" min="0" max="100" value="0" class="filter-range">
-      <span id="kerusakan-value">0</span> %
+      <input type="range" id="kerusakan-range" min="0" max="100" value="100" class="filter-range">
+      <span id="kerusakan-value">100</span> %
     </div>
     <div class="filter-section">
       <label for="progress-range">Progress Perbaikan (0-100%)</label>
-      <input type="range" id="progress-range" min="0" max="100" value="0" class="filter-range">
-      <span id="progress-value">0</span> %
+      <input type="range" id="progress-range" min="0" max="100" value="100" class="filter-range">
+      <span id="progress-value">100</span> %
     </div>
   </div>
 </div>
@@ -163,104 +163,195 @@ $('form').submit(function(e) {
   // L.control.rotate().addTo(map);
   
   
-  
-const dataLaporan = <?= json_encode($dataLaporan, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+// 1. Inisialisasi variabel global kosong (bukan const lagi, tapi let)
+    let dataLaporan = [];
 
-const layerTitik = L.layerGroup();
-const layerPolygon = L.layerGroup();
+    // Layer Group untuk Leaflet
+    const layerTitik = L.layerGroup();
+    const layerPolygon = L.layerGroup();
 
-// Fungsi untuk mendapatkan warna berdasarkan tingkat kerusakan
-function getKerusakanColor(value) {
-  const v = parseFloat(value);
-  if (isNaN(v)) return 'gray'; // fallback jika nilainya tidak valid
-  const r = Math.floor((v / 100) * 255);     // makin tinggi → makin merah
-  const g = Math.floor(200 - (v / 100) * 200); // makin rendah → makin hijau
-  return `rgb(${r}, ${g}, 0)`;
-}
+    // Tambahkan layer ke peta saat awal load
+    layerTitik.addTo(map);
+    layerPolygon.addTo(map);
 
-// Fungsi untuk menyaring data berdasarkan laporan dan filter
+    // --- FUNGSI BANTUAN ---
+
+    // Fungsi warna (Tidak berubah)
+    function getKerusakanColor(value) {
+        const v = parseFloat(value);
+        if (isNaN(v)) return 'gray';
+        const r = Math.floor((v / 100) * 255);
+        const g = Math.floor(200 - (v / 100) * 200);
+        return `rgb(${r}, ${g}, 0)`;
+    }
+
+    // --- LOGIKA UTAMA ---
+
+    // Fungsi Fetch Data dari Server (AJAX)
+    function ambilDataTerbaru() {
+        // Ganti 'nama_controller' dengan nama controller Anda yang sebenarnya
+        fetch('<?= base_url('home/getlaporanjson') ?>') 
+            .then(response => response.json())
+            .then(data => {
+                // Update variabel global dataLaporan dengan data baru dari server
+                dataLaporan = data;
+
+                // Ambil nilai search/filter saat ini agar tampilan tidak reset total
+                // Pastikan ID input search Anda benar (misal id="search-input")
+                const searchInput = document.getElementById('search-input'); 
+                const currentSearch = searchInput ? searchInput.value.toLowerCase() : '';
+
+                // Render ulang peta dengan data baru
+                filterData(currentSearch);
+            })
+            .catch(error => console.error('Gagal mengambil data:', error));
+    }
+
+// Fungsi Filter & Render Map
 function filterData(searchQuery = '') {
-  layerTitik.clearLayers();  // Hapus semua marker yang ada
-  layerPolygon.clearLayers();  // Hapus poligon yang ada
+    // 1. Bersihkan peta dari marker lama
+    layerTitik.clearLayers();
+    layerPolygon.clearLayers();
 
-  const kerusakanFilter = document.getElementById('kerusakan-range').value;
-  const progressFilter = document.getElementById('progress-range').value;
+    // 2. Ambil nilai slider
+    const elKerusakan = document.getElementById('kerusakan-range');
+    const elProgress = document.getElementById('progress-range');
+    
+    // Default 100 agar semua tampil di awal
+    const kerusakanFilter = elKerusakan ? parseFloat(elKerusakan.value) : 100;
+    const progressFilter = elProgress ? parseFloat(elProgress.value) : 100;
 
-  dataLaporan.forEach(row => {
-    if (!row.data_koordinat) return;
+    // Variabel penampung untuk fitur Zoom (Search)
+    let matchedCoords = []; 
+    let firstMarker = null; 
 
-    let koordinat;
-    try {
-      koordinat = JSON.parse(row.data_koordinat);
-      if (!Array.isArray(koordinat) || koordinat.length === 0) return;
-    } catch (e) {
-      console.warn('Koordinat tidak valid:', row.data_koordinat);
-      return;
+    // 3. Loop data global
+    dataLaporan.forEach(row => {
+        // Validasi koordinat
+        if (!row.data_koordinat) return;
+        let koordinat;
+        try {
+            koordinat = typeof row.data_koordinat === 'string' ? JSON.parse(row.data_koordinat) : row.data_koordinat;
+            if (!Array.isArray(koordinat) || koordinat.length === 0) return;
+        } catch (e) { return; }
+
+        // --- LOGIKA FILTER ---
+        // Kita HANYA memfilter berdasarkan Slider Range.
+        // Pencarian Teks TIDAK memfilter tampilan, hanya untuk selecting/zooming.
+        
+        const kerusakanMatch = parseFloat(row.tingkat_kerusakan) <= kerusakanFilter;
+        const progressMatch = parseFloat(row.progress_perbaikan) <= progressFilter;
+
+        // Cek kecocokan teks untuk keperluan Zoom nanti
+        const textLaporan = row.laporan ? row.laporan.toLowerCase() : '';
+        const isSearchMatch = searchQuery.length > 0 && textLaporan.includes(searchQuery);
+
+        // TAMPILKAN DATA (Hanya jika lolos filter slider)
+        if (kerusakanMatch && progressMatch) {
+            
+            // Loop setiap titik koordinat
+            koordinat.forEach((point, index) => {
+                
+                const marker = L.marker([point.lat, point.lng]);
+                
+                // --- KUMPULKAN DATA ZOOM ---
+                // Jika marker ini ditampilkan DAN cocok dengan pencarian teks
+                if (isSearchMatch) {
+                    matchedCoords.push([point.lat, point.lng]);
+                    
+                    // Simpan marker pertama yang cocok untuk dibuka popup-nya
+                    if (!firstMarker) {
+                        firstMarker = marker;
+                    }
+                }
+
+                // Setup Popup & Slider
+                const sliderId = `slider-${row.id}-${index}`;
+                let fotoHtml = '<div class="text-muted mb-2">Tidak ada foto</div>';
+                if (Array.isArray(row.fotos) && row.fotos.length > 0) {
+                    const slides = row.fotos.map(f => 
+                        `<li class="splide__slide"><img src="<?= base_url(); ?>/${f.url_foto}" style="width:100%;border-radius:5px;cursor:zoom-in;"></li>`
+                    ).join('');
+                    fotoHtml = `<div id="${sliderId}" class="splide" style="width:100%;margin-bottom:8px;"><div class="splide__track"><ul class="splide__list">${slides}</ul></div></div>`;
+                }
+
+                const popupContent = `
+                    <div style="min-width:180px;max-width:300px;">
+                        ${fotoHtml}
+                        <div><strong>Laporan:</strong><br>${row.laporan}</div>
+                        <div class="mt-1"><strong>Tingkat Kerusakan:</strong> ${row.tingkat_kerusakan}%</div>
+                        <div><strong>Progress:</strong> ${row.progress_perbaikan}%</div>
+                    </div>`;
+                
+                marker.bindPopup(popupContent, { autoPan: true });
+                
+                marker.on('popupopen', () => {
+                    if (document.getElementById(sliderId)) {
+                         setTimeout(() => {
+                            if(!document.getElementById(sliderId).classList.contains('is-active')){
+                                new Splide(`#${sliderId}`, { type: 'loop', heightRatio: 0.6, pagination: true, arrows: true }).mount();
+                            }
+                        }, 100);
+                    }
+                });
+
+                marker.addTo(layerTitik);
+            });
+
+            // Gambar Polygon
+            if (koordinat.length >= 3) {
+                const color = getKerusakanColor(parseFloat(row.tingkat_kerusakan));
+                const polygon = L.polygon(koordinat, {
+                    color: color, fillColor: color, fillOpacity: 0.4
+                });
+                polygon.addTo(layerPolygon);
+            }
+        }
+    });
+
+    // --- LOGIKA ZOOM ---
+    // Jika ada hasil pencarian yang ditemukan (matchedCoords terisi)
+    if (matchedCoords.length > 0) {
+        
+        // 1. Zoom peta ke area yang cocok
+        const bounds = L.latLngBounds(matchedCoords);
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 22 });
+
+        // 2. Buka popup marker pertama yang cocok
+        if (firstMarker) {
+            setTimeout(() => {
+                firstMarker.openPopup();
+            }, 300);
+        }
     }
-
-    const laporanMatch = row.laporan.toLowerCase().includes(searchQuery);
-    const kerusakanMatch = parseFloat(row.tingkat_kerusakan) >= kerusakanFilter;
-    const progressMatch = parseFloat(row.progress_perbaikan) >= progressFilter;
-
-    if (laporanMatch && kerusakanMatch && progressMatch) {
-      koordinat.forEach((point, index) => {
-        const marker = L.marker([point.lat, point.lng]);
-
-        // Pastikan bindPopup dipanggil untuk setiap marker
-        marker.bindPopup(() => {
-          const sliderId = `slider-${row.id}-${index}`;
-          const fotoHtml = (Array.isArray(row.fotos) && row.fotos.length > 0)
-            ? `
-            <div id="${sliderId}" class="splide" style="width:100%;margin-bottom:8px;">
-              <div class="splide__track">
-                <ul class="splide__list">
-                  ${row.fotos.map(f =>
-                    `<li class="splide__slide">
-                      <img src="<?= base_url(); ?>/${f.url_foto}" style="width:100%;border-radius:5px;cursor:zoom-in;" onclick="zoomImage(this.src)">
-                    </li>`).join('')}
-                </ul>
-              </div>
-            </div>` : '<div class="text-muted mb-2">Tidak ada foto</div>';
-
-          setTimeout(() => {
-            new Splide(`#${sliderId}`, {
-              type: 'loop',
-              heightRatio: 0.6,
-              pagination: true,
-              arrows: true,
-            }).mount();
-          }, 100);
-
-          return `
-            <div style="min-width:180px;max-width:300px;">
-              ${fotoHtml}
-              <div><strong>Laporan:</strong><br>${row.laporan}</div>
-              <div class="mt-1"><strong>Tingkat Kerusakan:</strong> ${row.tingkat_kerusakan}%</div>
-              <div><strong>Progress Perbaikan:</strong> ${row.progress_perbaikan}%</div>
-              <div><strong>Koordinat:</strong><br><code>${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}</code></div>
-            </div>`;
-        }, { autoPan: false });
-
-        marker.addTo(layerTitik);
-      });
-
-      // Filter poligon berdasarkan tingkat kerusakan
-      if (koordinat.length >= 3) {
-        const color = getKerusakanColor(parseFloat(row.tingkat_kerusakan)); // penting: pastikan angka
-        const polygon = L.polygon(koordinat, {
-          color: color,
-          fillColor: color,
-          fillOpacity: 0.4
-        });
-        polygon.addTo(layerPolygon);
-      }
-    }
-  });
-
-  // Menambahkan layerTitik dan layerPolygon ke peta
-  layerTitik.addTo(map);
-  layerPolygon.addTo(map);
 }
+
+    // --- EKSEKUSI ---
+
+    // 1. Panggil sekali saat halaman pertama dibuka
+    ambilDataTerbaru();
+
+    // 2. Pasang interval untuk update otomatis setiap 5 detik
+    setInterval(ambilDataTerbaru, 5000);
+
+    // 3. Listener untuk input search (manual trigger)
+    const searchInputEl = document.getElementById('search-input'); // Pastikan ID ini ada di HTML input Anda
+    if(searchInputEl) {
+        searchInputEl.addEventListener('input', (e) => {
+            filterData(e.target.value.toLowerCase());
+        });
+    }
+
+    // 4. Listener untuk Range Slider (manual trigger)
+    ['kerusakan-range', 'progress-range'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) {
+            el.addEventListener('input', () => {
+                const currentSearch = document.getElementById('search-input') ? document.getElementById('search-input').value.toLowerCase() : '';
+                filterData(currentSearch);
+            });
+        }
+    });
 
 // Set filter dalam keadaan minimize secara default saat halaman dimuat
 document.addEventListener('DOMContentLoaded', function() {
